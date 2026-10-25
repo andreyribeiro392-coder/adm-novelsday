@@ -1,311 +1,46 @@
 'use client'
 
-import { FormEvent, useEffect, useMemo, useState } from 'react'
-import { BookOpen, CircleDollarSign, ExternalLink, Film, LayoutDashboard, LogOut, Plus, RefreshCw, ShieldCheck, Users, X } from 'lucide-react'
+import { FormEvent, ReactNode, useEffect, useMemo, useState } from 'react'
+import { BarChart3, BookOpen, CircleDollarSign, ExternalLink, Film, Image as ImageIcon, LayoutDashboard, LogOut, Pencil, Plus, RefreshCw, Upload, Users, X } from 'lucide-react'
 import { getSupabase } from '@/lib/supabase'
 
-type Series = {
-  id: string
-  slug: string
-  title: string
-  synopsis: string | null
-  cover_url: string | null
-  hero_url: string | null
-  featured: boolean
-  status: 'draft' | 'published'
-  created_at: string
-}
-
-type Episode = {
-  id: string
-  series_id: string
-  number: number
-  title: string
-  description: string | null
-  video_url: string | null
-  thumbnail_url: string | null
-  access: 'free' | 'premium'
-  status: 'draft' | 'published'
-  created_at: string
-}
-
-type Tab = 'dashboard' | 'series' | 'episodes' | 'subscriptions'
-
+type Series = { id:string; slug:string; title:string; synopsis:string|null; tagline:string|null; category:string|null; cover_url:string|null; hero_url:string|null; featured:boolean; status:'draft'|'published'; created_at:string }
+type Episode = { id:string; series_id:string; number:number; title:string; description:string|null; caption:string|null; video_url:string|null; video_path:string|null; thumbnail_url:string|null; subtitle_url:string|null; access:'free'|'premium'; status:'draft'|'published'; created_at:string }
+type Tab = 'dashboard'|'series'|'episodes'|'subscriptions'
 const supabase = getSupabase()
 
-export default function AdminPage() {
-  const [loading, setLoading] = useState(true)
-  const [authorized, setAuthorized] = useState(false)
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [message, setMessage] = useState('')
-  const [tab, setTab] = useState<Tab>('dashboard')
-  const [series, setSeries] = useState<Series[]>([])
-  const [episodes, setEpisodes] = useState<Episode[]>([])
-  const [activeSubscriptions, setActiveSubscriptions] = useState(0)
-  const [paymentsCount, setPaymentsCount] = useState(0)
-  const [seriesModal, setSeriesModal] = useState(false)
-  const [episodeModal, setEpisodeModal] = useState(false)
-  const [saving, setSaving] = useState(false)
+function slugify(v:string){return v.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'')}
+function safeName(name:string){const ext=name.split('.').pop()?.toLowerCase()||'bin';return `${crypto.randomUUID()}.${ext}`}
 
-  const publicSiteUrl = process.env.NEXT_PUBLIC_PUBLIC_SITE_URL || ''
-
-  const seriesById = useMemo(() => new Map(series.map(item => [item.id, item.title])), [series])
-
-  async function loadData() {
-    if (!supabase) return
-    const [seriesResult, episodesResult, subscriptionsResult, paymentsResult] = await Promise.all([
-      supabase.from('series').select('*').order('created_at', { ascending: false }),
-      supabase.from('episodes').select('*').order('created_at', { ascending: false }),
-      supabase.from('subscriptions').select('*', { count: 'exact', head: true }).eq('status', 'active'),
-      supabase.from('payments').select('*', { count: 'exact', head: true })
-    ])
-
-    setSeries((seriesResult.data ?? []) as Series[])
-    setEpisodes((episodesResult.data ?? []) as Episode[])
-    setActiveSubscriptions(subscriptionsResult.count ?? 0)
-    setPaymentsCount(paymentsResult.count ?? 0)
-  }
-
-  async function verifyAdmin(userId: string) {
-    if (!supabase) return false
-    const { data, error } = await supabase.from('admin_users').select('user_id').eq('user_id', userId).maybeSingle()
-    const ok = !error && Boolean(data)
-    setAuthorized(ok)
-    if (ok) await loadData()
-    return ok
-  }
-
-  useEffect(() => {
-    async function boot() {
-      if (!supabase) {
-        setLoading(false)
-        return
-      }
-      const { data } = await supabase.auth.getSession()
-      if (data.session?.user) await verifyAdmin(data.session.user.id)
-      setLoading(false)
-    }
-    boot()
-
-    if (!supabase) return
-    const { data: listener } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      if (session?.user) await verifyAdmin(session.user.id)
-      else setAuthorized(false)
-    })
-    return () => listener.subscription.unsubscribe()
-  }, [])
-
-  async function login(event: FormEvent) {
-    event.preventDefault()
-    if (!supabase) return
-    setMessage('')
-    setLoading(true)
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password })
-    if (error) {
-      setMessage(error.message)
-      setLoading(false)
-      return
-    }
-    const ok = data.user ? await verifyAdmin(data.user.id) : false
-    if (!ok) {
-      await supabase.auth.signOut()
-      setMessage('Esta conta não possui acesso administrativo.')
-    }
-    setLoading(false)
-  }
-
-  async function logout() {
-    if (!supabase) return
-    await supabase.auth.signOut()
-    setAuthorized(false)
-  }
-
-  async function createSeries(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (!supabase) return
-    const form = new FormData(event.currentTarget)
-    setSaving(true)
-    setMessage('')
-    const payload = {
-      title: String(form.get('title') || '').trim(),
-      slug: String(form.get('slug') || '').trim().toLowerCase(),
-      synopsis: String(form.get('synopsis') || '').trim() || null,
-      cover_url: String(form.get('cover_url') || '').trim() || null,
-      hero_url: String(form.get('hero_url') || '').trim() || null,
-      featured: form.get('featured') === 'on',
-      status: String(form.get('status') || 'draft')
-    }
-    const { error } = await supabase.from('series').insert(payload)
-    setSaving(false)
-    if (error) return setMessage(error.message)
-    setSeriesModal(false)
-    event.currentTarget.reset()
-    await loadData()
-  }
-
-  async function createEpisode(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (!supabase) return
-    const form = new FormData(event.currentTarget)
-    setSaving(true)
-    setMessage('')
-    const payload = {
-      series_id: String(form.get('series_id') || ''),
-      number: Number(form.get('number')),
-      title: String(form.get('title') || '').trim(),
-      description: String(form.get('description') || '').trim() || null,
-      video_url: String(form.get('video_url') || '').trim() || null,
-      thumbnail_url: String(form.get('thumbnail_url') || '').trim() || null,
-      access: String(form.get('access') || 'free'),
-      status: String(form.get('status') || 'draft')
-    }
-    const { error } = await supabase.from('episodes').insert(payload)
-    setSaving(false)
-    if (error) return setMessage(error.message)
-    setEpisodeModal(false)
-    event.currentTarget.reset()
-    await loadData()
-  }
-
-  async function setSeriesStatus(id: string, status: 'draft' | 'published') {
-    if (!supabase) return
-    const { error } = await supabase.from('series').update({ status, updated_at: new Date().toISOString() }).eq('id', id)
-    if (error) setMessage(error.message)
-    else await loadData()
-  }
-
-  async function setEpisodeStatus(id: string, status: 'draft' | 'published') {
-    if (!supabase) return
-    const { error } = await supabase.from('episodes').update({ status, updated_at: new Date().toISOString() }).eq('id', id)
-    if (error) setMessage(error.message)
-    else await loadData()
-  }
-
-  async function removeSeries(id: string) {
-    if (!supabase || !confirm('Excluir esta novela e todos os episódios vinculados?')) return
-    const { error } = await supabase.from('series').delete().eq('id', id)
-    if (error) setMessage(error.message)
-    else await loadData()
-  }
-
-  async function removeEpisode(id: string) {
-    if (!supabase || !confirm('Excluir este episódio?')) return
-    const { error } = await supabase.from('episodes').delete().eq('id', id)
-    if (error) setMessage(error.message)
-    else await loadData()
-  }
-
-  if (!supabase) {
-    return <SetupRequired />
-  }
-
-  if (loading) {
-    return <div className="center-screen"><RefreshCw className="spin"/><span>Carregando painel…</span></div>
-  }
-
-  if (!authorized) {
-    return (
-      <main className="login-page">
-        <div className="login-glow"/>
-        <form className="login-card" onSubmit={login}>
-          <div className="admin-brand"><span>N</span><strong>NOVELS<span>.DAY</span></strong></div>
-          <div className="login-heading"><span>PAINEL ADMINISTRATIVO</span><h1>Acesso restrito</h1><p>Entre com uma conta autorizada no Supabase.</p></div>
-          <label>E-mail<input type="email" value={email} onChange={e => setEmail(e.target.value)} required autoComplete="email"/></label>
-          <label>Senha<input type="password" value={password} onChange={e => setPassword(e.target.value)} required autoComplete="current-password"/></label>
-          {message && <div className="alert">{message}</div>}
-          <button className="primary" type="submit">Entrar</button>
-        </form>
-      </main>
-    )
-  }
-
-  return (
-    <main className="admin-shell">
-      <aside className="sidebar">
-        <div className="admin-brand"><span>N</span><strong>NOVELS<span>.DAY</span></strong></div>
-        <small>ADMIN</small>
-        <nav>
-          <button className={tab === 'dashboard' ? 'active' : ''} onClick={() => setTab('dashboard')}><LayoutDashboard/><span>Visão geral</span></button>
-          <button className={tab === 'series' ? 'active' : ''} onClick={() => setTab('series')}><BookOpen/><span>Novelas</span></button>
-          <button className={tab === 'episodes' ? 'active' : ''} onClick={() => setTab('episodes')}><Film/><span>Episódios</span></button>
-          <button className={tab === 'subscriptions' ? 'active' : ''} onClick={() => setTab('subscriptions')}><Users/><span>Assinaturas</span></button>
-        </nav>
-        <div className="sidebar-bottom">
-          {publicSiteUrl && <a href={publicSiteUrl} target="_blank" rel="noreferrer"><ExternalLink/> Ver site</a>}
-          <button onClick={logout}><LogOut/> Sair</button>
-        </div>
-      </aside>
-
-      <section className="workspace">
-        <header className="workspace-header">
-          <div><span className="kicker">NOVELS.DAY</span><h1>{tab === 'dashboard' ? 'Visão geral' : tab === 'series' ? 'Novelas' : tab === 'episodes' ? 'Episódios' : 'Assinaturas'}</h1></div>
-          <button className="refresh" onClick={loadData}><RefreshCw size={17}/> Atualizar</button>
-        </header>
-
-        {message && <div className="alert workspace-alert">{message}<button onClick={() => setMessage('')}><X size={16}/></button></div>}
-
-        {tab === 'dashboard' && (
-          <div className="dashboard">
-            <div className="stats-grid">
-              <Stat label="Novelas" value={series.length} icon={<BookOpen/>}/>
-              <Stat label="Episódios" value={episodes.length} icon={<Film/>}/>
-              <Stat label="Assinaturas ativas" value={activeSubscriptions} icon={<Users/>}/>
-              <Stat label="Pagamentos registrados" value={paymentsCount} icon={<CircleDollarSign/>}/>
-            </div>
-            <section className="panel">
-              <div className="panel-head"><div><span className="kicker">CONTEÚDO</span><h2>Publicação</h2></div></div>
-              <div className="status-lines">
-                <div><span>Novelas publicadas</span><strong>{series.filter(item => item.status === 'published').length}</strong></div>
-                <div><span>Episódios publicados</span><strong>{episodes.filter(item => item.status === 'published').length}</strong></div>
-                <div><span>Episódios Premium</span><strong>{episodes.filter(item => item.access === 'premium').length}</strong></div>
-              </div>
-            </section>
-          </div>
-        )}
-
-        {tab === 'series' && (
-          <section>
-            <div className="content-head"><div><span className="kicker">CATÁLOGO</span><h2>Novelas cadastradas</h2></div><button className="primary compact" onClick={() => setSeriesModal(true)}><Plus size={17}/> Nova novela</button></div>
-            {series.length ? <div className="data-list">{series.map(item => <article className="data-row" key={item.id}><div className="thumb" style={item.cover_url ? { backgroundImage: `url(${item.cover_url})` } : undefined}>{!item.cover_url && item.title.slice(0,1)}</div><div className="row-main"><strong>{item.title}</strong><span>/{item.slug}</span></div><span className={`status ${item.status}`}>{item.status === 'published' ? 'Publicado' : 'Rascunho'}</span><div className="row-actions"><button onClick={() => setSeriesStatus(item.id, item.status === 'published' ? 'draft' : 'published')}>{item.status === 'published' ? 'Despublicar' : 'Publicar'}</button><button className="danger" onClick={() => removeSeries(item.id)}>Excluir</button></div></article>)}</div> : <Empty title="Nenhuma novela cadastrada" text="Quando você criar a primeira novela, ela aparecerá aqui e poderá ser publicada no site."/>}
-          </section>
-        )}
-
-        {tab === 'episodes' && (
-          <section>
-            <div className="content-head"><div><span className="kicker">CONTEÚDO</span><h2>Episódios cadastrados</h2></div><button className="primary compact" onClick={() => setEpisodeModal(true)} disabled={!series.length}><Plus size={17}/> Novo episódio</button></div>
-            {!series.length && <div className="hint">Cadastre uma novela antes de adicionar episódios.</div>}
-            {episodes.length ? <div className="data-list">{episodes.map(item => <article className="data-row" key={item.id}><div className="episode-index">{item.number}</div><div className="row-main"><strong>{item.title}</strong><span>{seriesById.get(item.series_id) ?? 'Novela removida'} • {item.access === 'premium' ? 'Premium' : 'Grátis'}</span></div><span className={`status ${item.status}`}>{item.status === 'published' ? 'Publicado' : 'Rascunho'}</span><div className="row-actions"><button onClick={() => setEpisodeStatus(item.id, item.status === 'published' ? 'draft' : 'published')}>{item.status === 'published' ? 'Despublicar' : 'Publicar'}</button><button className="danger" onClick={() => removeEpisode(item.id)}>Excluir</button></div></article>)}</div> : <Empty title="Nenhum episódio cadastrado" text="Os episódios que você adicionar aparecerão aqui sem conteúdo de exemplo."/>}
-          </section>
-        )}
-
-        {tab === 'subscriptions' && (
-          <section>
-            <div className="content-head"><div><span className="kicker">RECEITA</span><h2>Assinaturas e pagamentos</h2></div></div>
-            <Empty title="Integração de pagamento ainda não conectada" text="As tabelas reais de assinaturas e pagamentos já existem, mas nenhum gateway foi simulado. Quando o provedor real for conectado, os dados aparecerão aqui."/>
-          </section>
-        )}
-      </section>
-
-      {seriesModal && <Modal title="Nova novela" onClose={() => setSeriesModal(false)}><form className="editor-form" onSubmit={createSeries}><label>Título<input name="title" required/></label><label>Slug<input name="slug" placeholder="nome-da-novela" required pattern="[a-z0-9-]+"/></label><label>Sinopse<textarea name="synopsis" rows={4}/></label><label>URL da capa vertical<input name="cover_url" type="url"/></label><label>URL do banner<input name="hero_url" type="url"/></label><div className="two-cols"><label>Status<select name="status" defaultValue="draft"><option value="draft">Rascunho</option><option value="published">Publicado</option></select></label><label className="check"><input type="checkbox" name="featured"/> Destaque da home</label></div><button className="primary" disabled={saving}>{saving ? 'Salvando…' : 'Salvar novela'}</button></form></Modal>}
-
-      {episodeModal && <Modal title="Novo episódio" onClose={() => setEpisodeModal(false)}><form className="editor-form" onSubmit={createEpisode}><label>Novela<select name="series_id" required defaultValue=""><option value="" disabled>Selecione</option>{series.map(item => <option value={item.id} key={item.id}>{item.title}</option>)}</select></label><div className="two-cols"><label>Número<input name="number" type="number" min="1" required/></label><label>Acesso<select name="access" defaultValue="free"><option value="free">Grátis</option><option value="premium">Premium</option></select></label></div><label>Título<input name="title" required/></label><label>Descrição<textarea name="description" rows={3}/></label><label>URL do vídeo<input name="video_url" type="url"/></label><label>URL da thumbnail<input name="thumbnail_url" type="url"/></label><label>Status<select name="status" defaultValue="draft"><option value="draft">Rascunho</option><option value="published">Publicado</option></select></label><button className="primary" disabled={saving}>{saving ? 'Salvando…' : 'Salvar episódio'}</button></form></Modal>}
-    </main>
-  )
+export default function AdminPage(){
+ const[loading,setLoading]=useState(true),[authorized,setAuthorized]=useState(false),[email,setEmail]=useState(''),[password,setPassword]=useState(''),[message,setMessage]=useState(''),[tab,setTab]=useState<Tab>('dashboard'),[series,setSeries]=useState<Series[]>([]),[episodes,setEpisodes]=useState<Episode[]>([]),[activeSubscriptions,setActiveSubscriptions]=useState(0),[paymentsCount,setPaymentsCount]=useState(0),[viewsCount,setViewsCount]=useState(0),[seriesModal,setSeriesModal]=useState(false),[episodeModal,setEpisodeModal]=useState(false),[editingSeries,setEditingSeries]=useState<Series|null>(null),[editingEpisode,setEditingEpisode]=useState<Episode|null>(null),[saving,setSaving]=useState(false),[uploadProgress,setUploadProgress]=useState('')
+ const publicSiteUrl=process.env.NEXT_PUBLIC_PUBLIC_SITE_URL||''
+ const seriesById=useMemo(()=>new Map(series.map(s=>[s.id,s.title])),[series])
+ async function loadData(){if(!supabase)return;const[a,b,c,d,e]=await Promise.all([supabase.from('series').select('*').order('created_at',{ascending:false}),supabase.from('episodes').select('*').order('created_at',{ascending:false}),supabase.from('subscriptions').select('*',{count:'exact',head:true}).eq('status','active'),supabase.from('payments').select('*',{count:'exact',head:true}),supabase.from('episode_views').select('*',{count:'exact',head:true})]);setSeries((a.data??[])as Series[]);setEpisodes((b.data??[])as Episode[]);setActiveSubscriptions(c.count??0);setPaymentsCount(d.count??0);setViewsCount(e.count??0)}
+ async function verifyAdmin(id:string){if(!supabase)return false;const{data,error}=await supabase.from('admin_users').select('user_id').eq('user_id',id).maybeSingle();const ok=!error&&!!data;setAuthorized(ok);if(ok)await loadData();return ok}
+ useEffect(()=>{(async()=>{if(!supabase){setLoading(false);return}const{data}=await supabase.auth.getSession();if(data.session?.user)await verifyAdmin(data.session.user.id);setLoading(false)})();if(!supabase)return;const{data:l}=supabase.auth.onAuthStateChange(async(_e,s)=>{if(s?.user)await verifyAdmin(s.user.id);else setAuthorized(false)});return()=>l.subscription.unsubscribe()},[])
+ async function login(e:FormEvent){e.preventDefault();if(!supabase)return;setLoading(true);setMessage('');const{data,error}=await supabase.auth.signInWithPassword({email,password});if(error){setMessage(error.message);setLoading(false);return}const ok=data.user?await verifyAdmin(data.user.id):false;if(!ok){await supabase.auth.signOut();setMessage('Esta conta não possui acesso administrativo.')}setLoading(false)}
+ async function logout(){if(!supabase)return;await supabase.auth.signOut();setAuthorized(false)}
+ async function uploadPublic(file:File,bucket:string,folder:string){if(!supabase)throw new Error('Supabase indisponível');const path=`${folder}/${safeName(file.name)}`;const{error}=await supabase.storage.from(bucket).upload(path,file,{upsert:false,contentType:file.type||undefined});if(error)throw error;return supabase.storage.from(bucket).getPublicUrl(path).data.publicUrl}
+ async function uploadPrivate(file:File,episodeId:string){if(!supabase)throw new Error('Supabase indisponível');const path=`episodes/${episodeId}/${safeName(file.name)}`;const{error}=await supabase.storage.from('novels-videos').upload(path,file,{upsert:false,contentType:file.type||'video/mp4'});if(error)throw error;return path}
+ async function saveSeries(e:FormEvent<HTMLFormElement>){e.preventDefault();if(!supabase)return;setSaving(true);setMessage('');setUploadProgress('Preparando arquivos…');try{const f=new FormData(e.currentTarget),title=String(f.get('title')||'').trim(),payload:any={title,slug:String(f.get('slug')||slugify(title)).trim().toLowerCase(),tagline:String(f.get('tagline')||'').trim()||null,category:String(f.get('category')||'').trim()||null,synopsis:String(f.get('synopsis')||'').trim()||null,featured:f.get('featured')==='on',status:String(f.get('status')||'draft'),updated_at:new Date().toISOString()};const cover=f.get('cover_file')as File,hero=f.get('hero_file')as File;if(cover?.size){setUploadProgress('Enviando capa…');payload.cover_url=await uploadPublic(cover,'novels-images','series/covers')}if(hero?.size){setUploadProgress('Enviando imagem de destaque…');payload.hero_url=await uploadPublic(hero,'novels-images','series/heroes')}const q=editingSeries?supabase.from('series').update(payload).eq('id',editingSeries.id):supabase.from('series').insert(payload);const{error}=await q;if(error)throw error;setSeriesModal(false);setEditingSeries(null);setUploadProgress('');await loadData()}catch(err:any){setMessage(err.message||'Erro ao salvar novela.')}finally{setSaving(false)}}
+ async function saveEpisode(e:FormEvent<HTMLFormElement>){e.preventDefault();if(!supabase)return;setSaving(true);setMessage('');try{const f=new FormData(e.currentTarget),base:any={series_id:String(f.get('series_id')||''),number:Number(f.get('number')),title:String(f.get('title')||'').trim(),description:String(f.get('description')||'').trim()||null,caption:String(f.get('caption')||'').trim()||null,access:String(f.get('access')||'free'),status:String(f.get('status')||'draft'),updated_at:new Date().toISOString()};let id=editingEpisode?.id;if(editingEpisode){const{error}=await supabase.from('episodes').update(base).eq('id',editingEpisode.id);if(error)throw error}else{const{data,error}=await supabase.from('episodes').insert(base).select('id').single();if(error)throw error;id=data.id}const patch:any={};const video=f.get('video_file')as File,thumb=f.get('thumbnail_file')as File,sub=f.get('subtitle_file')as File;if(video?.size&&id){setUploadProgress('Enviando vídeo…');patch.video_path=await uploadPrivate(video,id);patch.video_url=null}if(thumb?.size){setUploadProgress('Enviando thumbnail…');patch.thumbnail_url=await uploadPublic(thumb,'novels-images','episodes/thumbnails')}if(sub?.size){setUploadProgress('Enviando legenda…');patch.subtitle_url=await uploadPublic(sub,'novels-subtitles','episodes/subtitles')}if(Object.keys(patch).length&&id){const{error}=await supabase.from('episodes').update({...patch,updated_at:new Date().toISOString()}).eq('id',id);if(error)throw error}setEpisodeModal(false);setEditingEpisode(null);setUploadProgress('');await loadData()}catch(err:any){setMessage(err.message||'Erro ao salvar episódio.')}finally{setSaving(false)}}
+ async function setStatus(table:'series'|'episodes',id:string,status:'draft'|'published'){if(!supabase)return;const{error}=await supabase.from(table).update({status,updated_at:new Date().toISOString()}).eq('id',id);if(error)setMessage(error.message);else await loadData()}
+ async function remove(table:'series'|'episodes',id:string){if(!supabase||!confirm(table==='series'?'Excluir esta novela e todos os episódios vinculados?':'Excluir este episódio?'))return;const{error}=await supabase.from(table).delete().eq('id',id);if(error)setMessage(error.message);else await loadData()}
+ if(!supabase)return <SetupRequired/>;if(loading)return <div className="center-screen"><RefreshCw className="spin"/>Carregando painel…</div>;if(!authorized)return <main className="login-page"><form className="login-card" onSubmit={login}><Brand/><div className="login-heading"><span>PAINEL ADMINISTRATIVO</span><h1>Acesso restrito</h1><p>Gerencie o conteúdo real do NOVELS.DAY.</p></div><label>E-mail<input type="email" value={email} onChange={e=>setEmail(e.target.value)} required/></label><label>Senha<input type="password" value={password} onChange={e=>setPassword(e.target.value)} required/></label>{message&&<div className="alert">{message}</div>}<button className="primary">Entrar</button></form></main>
+ return <main className="admin-shell"><aside className="sidebar"><Brand/><small>ADMIN STUDIO</small><nav><Nav active={tab==='dashboard'} onClick={()=>setTab('dashboard')} icon={<LayoutDashboard/>}>Visão geral</Nav><Nav active={tab==='series'} onClick={()=>setTab('series')} icon={<BookOpen/>}>Novelas</Nav><Nav active={tab==='episodes'} onClick={()=>setTab('episodes')} icon={<Film/>}>Episódios</Nav><Nav active={tab==='subscriptions'} onClick={()=>setTab('subscriptions')} icon={<Users/>}>Assinaturas</Nav></nav><div className="sidebar-bottom">{publicSiteUrl&&<a href={publicSiteUrl} target="_blank"><ExternalLink/>Ver site</a>}<button onClick={logout}><LogOut/>Sair</button></div></aside><section className="workspace"><header className="workspace-header"><div><span className="kicker">NOVELS.DAY STUDIO</span><h1>{tab==='dashboard'?'Visão geral':tab==='series'?'Novelas':tab==='episodes'?'Episódios':'Assinaturas'}</h1></div><button className="refresh" onClick={loadData}><RefreshCw size={17}/>Atualizar</button></header>{message&&<div className="alert workspace-alert">{message}<button onClick={()=>setMessage('')}><X size={16}/></button></div>}
+ {tab==='dashboard'&&<><div className="stats-grid"><Stat label="Novelas" value={series.length} icon={<BookOpen/>}/><Stat label="Episódios" value={episodes.length} icon={<Film/>}/><Stat label="Visualizações" value={viewsCount} icon={<BarChart3/>}/><Stat label="Assinaturas ativas" value={activeSubscriptions} icon={<Users/>}/></div><section className="panel"><div className="panel-head"><span className="kicker">PUBLICAÇÃO</span><h2>Resumo do catálogo</h2></div><div className="status-lines"><div><span>Novelas publicadas</span><strong>{series.filter(x=>x.status==='published').length}</strong></div><div><span>Episódios publicados</span><strong>{episodes.filter(x=>x.status==='published').length}</strong></div><div><span>Episódios Premium</span><strong>{episodes.filter(x=>x.access==='premium').length}</strong></div><div><span>Pagamentos</span><strong>{paymentsCount}</strong></div></div></section></>}
+ {tab==='series'&&<section><div className="content-head"><div><span className="kicker">CATÁLOGO</span><h2>Novelas cadastradas</h2></div><button className="primary compact" onClick={()=>{setEditingSeries(null);setSeriesModal(true)}}><Plus size={17}/>Nova novela</button></div>{series.length?<div className="data-list">{series.map(item=><article className="data-row series-row" key={item.id}><div className="thumb" style={item.cover_url?{backgroundImage:`url(${item.cover_url})`}:undefined}>{!item.cover_url&&item.title[0]}</div><div className="row-main"><strong>{item.title}</strong><span>{item.category||'Sem categoria'} • /{item.slug}</span></div><span className={`status ${item.status}`}>{item.status==='published'?'Publicado':'Rascunho'}</span><div className="row-actions"><button onClick={()=>{setEditingSeries(item);setSeriesModal(true)}}><Pencil size={14}/>Editar</button><button onClick={()=>setStatus('series',item.id,item.status==='published'?'draft':'published')}>{item.status==='published'?'Despublicar':'Publicar'}</button><button className="danger" onClick={()=>remove('series',item.id)}>Excluir</button></div></article>)}</div>:<Empty title="Nenhuma novela" text="Crie a primeira novela usando arquivos reais de capa e destaque."/>}</section>}
+ {tab==='episodes'&&<section><div className="content-head"><div><span className="kicker">CONTEÚDO</span><h2>Episódios cadastrados</h2></div><button className="primary compact" disabled={!series.length} onClick={()=>{setEditingEpisode(null);setEpisodeModal(true)}}><Plus size={17}/>Novo episódio</button></div>{episodes.length?<div className="data-list">{episodes.map(item=><article className="data-row episode-row" key={item.id}><div className="episode-index">{item.number}</div><div className="row-main"><strong>{item.title}</strong><span>{seriesById.get(item.series_id)||'Novela removida'} • {item.access==='premium'?'Premium':'Grátis'}</span></div><span className={`status ${item.status}`}>{item.status==='published'?'Publicado':'Rascunho'}</span><div className="row-actions"><button onClick={()=>{setEditingEpisode(item);setEpisodeModal(true)}}><Pencil size={14}/>Editar</button><button onClick={()=>setStatus('episodes',item.id,item.status==='published'?'draft':'published')}>{item.status==='published'?'Despublicar':'Publicar'}</button><button className="danger" onClick={()=>remove('episodes',item.id)}>Excluir</button></div></article>)}</div>:<Empty title="Nenhum episódio" text="Envie o vídeo 9:16, thumbnail e legenda direto do seu computador."/>}</section>}
+ {tab==='subscriptions'&&<section><div className="content-head"><div><span className="kicker">RECEITA</span><h2>Assinaturas e pagamentos</h2></div></div><Empty title="Gateway de pagamento ainda não conectado" text="Os dados reais aparecerão aqui quando a cobrança real estiver integrada."/></section>}</section>
+ {seriesModal&&<Modal title={editingSeries?'Editar novela':'Nova novela'} onClose={()=>{setSeriesModal(false);setEditingSeries(null)}}><form className="editor-form" onSubmit={saveSeries}><div className="two-cols"><label>Título<input name="title" defaultValue={editingSeries?.title||''} required onBlur={e=>{const el=e.currentTarget.form?.elements.namedItem('slug')as HTMLInputElement;if(el&&!el.value)el.value=slugify(e.target.value)}}/></label><label>Slug<input name="slug" defaultValue={editingSeries?.slug||''} placeholder="nome-da-novela" required/></label></div><div className="two-cols"><label>Categoria<input name="category" defaultValue={editingSeries?.category||''} placeholder="Drama, Romance…"/></label><label>Frase curta<input name="tagline" defaultValue={editingSeries?.tagline||''} placeholder="Uma frase de impacto"/></label></div><label>Descrição / sinopse<textarea name="synopsis" rows={5} defaultValue={editingSeries?.synopsis||''}/></label><div className="upload-grid"><FileField label="Capa vertical" name="cover_file" accept="image/*" hint="Recomendado 9:16" current={editingSeries?.cover_url}/><FileField label="Imagem de destaque" name="hero_file" accept="image/*" hint="Pode usar 16:9 ou imagem ampla" current={editingSeries?.hero_url}/></div><div className="two-cols"><label>Status<select name="status" defaultValue={editingSeries?.status||'draft'}><option value="draft">Rascunho</option><option value="published">Publicado</option></select></label><label className="check"><input type="checkbox" name="featured" defaultChecked={editingSeries?.featured}/>Destacar na página inicial</label></div>{uploadProgress&&<div className="upload-progress">{uploadProgress}</div>}<button className="primary" disabled={saving}>{saving?'Salvando…':'Salvar novela'}</button></form></Modal>}
+ {episodeModal&&<Modal title={editingEpisode?'Editar episódio':'Novo episódio'} onClose={()=>{setEpisodeModal(false);setEditingEpisode(null)}}><form className="editor-form" onSubmit={saveEpisode}><div className="two-cols"><label>Novela<select name="series_id" defaultValue={editingEpisode?.series_id||series[0]?.id}>{series.map(s=><option key={s.id} value={s.id}>{s.title}</option>)}</select></label><label>Número<input type="number" min="1" name="number" defaultValue={editingEpisode?.number||1} required/></label></div><label>Título<input name="title" defaultValue={editingEpisode?.title||''} required/></label><label>Descrição<textarea name="description" rows={4} defaultValue={editingEpisode?.description||''}/></label><label>Legenda/texto do episódio<textarea name="caption" rows={4} defaultValue={editingEpisode?.caption||''} placeholder="Texto, legenda ou observação que aparecerá abaixo do vídeo"/></label><div className="upload-grid"><FileField label="Vídeo 9:16" name="video_file" accept="video/*" hint={editingEpisode?.video_path||editingEpisode?.video_url?'Já existe um vídeo. Envie outro apenas para substituir.':'MP4 recomendado'}/><FileField label="Thumbnail" name="thumbnail_file" accept="image/*" hint="Imagem vertical 9:16" current={editingEpisode?.thumbnail_url}/><FileField label="Arquivo de legenda" name="subtitle_file" accept=".vtt,text/vtt" hint="Opcional • WebVTT" current={editingEpisode?.subtitle_url}/></div><div className="two-cols"><label>Acesso<select name="access" defaultValue={editingEpisode?.access||'free'}><option value="free">Grátis</option><option value="premium">Premium</option></select></label><label>Status<select name="status" defaultValue={editingEpisode?.status||'draft'}><option value="draft">Rascunho</option><option value="published">Publicado</option></select></label></div>{uploadProgress&&<div className="upload-progress">{uploadProgress}</div>}<button className="primary" disabled={saving}>{saving?'Enviando e salvando…':'Salvar episódio'}</button></form></Modal>}</main>
 }
 
-function Stat({ label, value, icon }: { label: string; value: number; icon: React.ReactNode }) {
-  return <article className="stat-card"><div className="stat-icon">{icon}</div><span>{label}</span><strong>{value}</strong></article>
-}
-
-function Empty({ title, text }: { title: string; text: string }) {
-  return <div className="empty-state"><div className="empty-symbol"><ShieldCheck/></div><strong>{title}</strong><p>{text}</p></div>
-}
-
-function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
-  return <div className="modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}><div className="modal"><button className="modal-close" onClick={onClose}><X/></button><span className="kicker">NOVELS.DAY ADMIN</span><h2>{title}</h2>{children}</div></div>
-}
-
-function SetupRequired() {
-  return <main className="setup-page"><div className="setup-card"><div className="admin-brand"><span>N</span><strong>NOVELS<span>.DAY</span></strong></div><h1>Conecte o Supabase</h1><p>O painel não usa dados falsos. Para começar, configure as variáveis do arquivo <code>.env.example</code> na Vercel e execute o arquivo <code>schema.sql</code> no Supabase.</p></div></main>
-}
+function Brand(){return <div className="admin-brand"><span>N</span><strong>NOVELS<span>.DAY</span></strong></div>}
+function Nav({active,onClick,icon,children}:{active:boolean;onClick:()=>void;icon:ReactNode;children:ReactNode}){return <button className={active?'active':''} onClick={onClick}>{icon}<span>{children}</span></button>}
+function Stat({label,value,icon}:{label:string;value:number;icon:ReactNode}){return <article className="stat-card"><span>{label}</span><strong>{value}</strong><div className="stat-icon">{icon}</div></article>}
+function Empty({title,text}:{title:string;text:string}){return <div className="empty-state"><div className="empty-symbol"><ImageIcon/></div><strong>{title}</strong><p>{text}</p></div>}
+function FileField({label,name,accept,hint,current}:{label:string;name:string;accept:string;hint:string;current?:string|null}){return <label className="file-field"><span>{label}</span><div className="file-drop"><Upload size={20}/><strong>Escolher arquivo</strong><small>{hint}</small><input type="file" name={name} accept={accept}/></div>{current&&<a className="current-file" href={current} target="_blank">Ver arquivo atual <ExternalLink size={13}/></a>}</label>}
+function Modal({title,onClose,children}:{title:string;onClose:()=>void;children:ReactNode}){return <div className="modal-backdrop"><div className="modal"><button className="modal-close" onClick={onClose}><X/></button><span className="kicker">EDITOR</span><h2>{title}</h2>{children}</div></div>}
+function SetupRequired(){return <main className="setup-page"><div className="setup-card"><Brand/><h1>Configuração necessária</h1><p>Defina as variáveis do Supabase na Vercel.</p></div></main>}
